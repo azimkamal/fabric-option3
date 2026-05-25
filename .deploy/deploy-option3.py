@@ -1,42 +1,43 @@
 import os, argparse, time, requests
 from azure.identity import ClientSecretCredential
- 
+
 FABRIC_API = 'https://api.fabric.microsoft.com/v1'
- 
- 
+
+
 def get_token(credential):
     """Get a bearer token for the Fabric API."""
     scope = 'https://api.fabric.microsoft.com/.default'
     return credential.get_token(scope).token
- 
- 
-def deploy_stage(token, pipeline_id, source_stage_id, note=''):
+
+
+def deploy_stage(token, pipeline_id, source_stage_id, target_stage_id, note=''):
     """
-    Trigger a deployment from source_stage to the next stage.
+    Trigger a deployment from source_stage to target_stage.
     Uses the Fabric Deploy Stage Content API.
+    Both sourceStageId and targetStageId go in the request BODY — not the URL.
     Returns the operation ID for polling.
     """
-    url = f'{FABRIC_API}/deploymentPipelines/{pipeline_id}/stages/{source_stage_id}/deploy'
+    url = f'{FABRIC_API}/deploymentPipelines/{pipeline_id}/deploy'
     headers = {
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json'
     }
     body = {
+        'sourceStageId': source_stage_id,
+        'targetStageId': target_stage_id,
         'note': note,
-        # To deploy all items leave 'items' out of the body.
-        # For selective deploy, add:
-        # 'items': [{'type': 'Notebook', 'sourceId': '<item-id>'}]
+        # To deploy specific items only, add:
+        # 'items': [{'sourceItemId': '<item-id>', 'itemType': 'Notebook'}]
     }
     response = requests.post(url, headers=headers, json=body)
     if response.status_code in (200, 202):
-        # 202 Accepted — async operation, get operation ID from header
         op_id = response.headers.get('x-ms-operation-id')
         print(f'  Deployment triggered. Operation ID: {op_id}')
         return op_id
     else:
         raise Exception(f'Deploy failed: {response.status_code} {response.text}')
- 
- 
+
+
 def poll_operation(token, op_id, timeout=600, interval=10):
     """
     Poll the Long Running Operation until it completes.
@@ -58,9 +59,9 @@ def poll_operation(token, op_id, timeout=600, interval=10):
         time.sleep(interval)
         elapsed += interval
     raise Exception(f'Deployment timed out after {timeout}s')
- 
- 
-# ── Argument parser ─────────────────────────────────────────
+
+
+# ── Argument parser ──────────────────────────────────────────
 parser = argparse.ArgumentParser()
 parser.add_argument('--aztenantid',       type=str)
 parser.add_argument('--azclientid',       type=str)
@@ -72,7 +73,7 @@ parser.add_argument('--prod_stage_id',    type=str)
 parser.add_argument('--target',           type=str,
                     help='test | prod | both (default: both)')
 args = parser.parse_args()
- 
+
 # ── Authentication ───────────────────────────────────────────
 credential = ClientSecretCredential(
     client_id=args.azclientid,
@@ -83,27 +84,33 @@ token = get_token(credential)
 print(f'  Authenticated successfully.')
 print(f'  Pipeline ID  : {args.pipeline_id}')
 print(f'  Target       : {args.target}')
- 
+
 target = args.target or 'both'
- 
+
 # ── Deploy Dev → Test ────────────────────────────────────────
 if target in ('test', 'both'):
     print('\n--- Deploying Dev → Test ---')
     op_id = deploy_stage(
-        token, args.pipeline_id, args.dev_stage_id,
+        token,
+        pipeline_id=args.pipeline_id,
+        source_stage_id=args.dev_stage_id,
+        target_stage_id=args.test_stage_id,
         note='Automated deployment via GitHub Actions'
     )
     poll_operation(token, op_id)
- 
+
 # ── Deploy Test → Prod ───────────────────────────────────────
 if target in ('prod', 'both'):
     print('\n--- Deploying Test → Prod ---')
-    # Refresh token before Prod deploy (long-running workflows)
+    # Refresh token — long-running workflows may expire the first token
     token = get_token(credential)
     op_id = deploy_stage(
-        token, args.pipeline_id, args.test_stage_id,
+        token,
+        pipeline_id=args.pipeline_id,
+        source_stage_id=args.test_stage_id,
+        target_stage_id=args.prod_stage_id,
         note='Automated deployment via GitHub Actions'
     )
     poll_operation(token, op_id)
- 
+
 print('\nAll deployments completed.')
