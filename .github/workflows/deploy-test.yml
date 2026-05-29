@@ -1,0 +1,109 @@
+# ============================================================
+# deploy-test.yml
+# Workflow 1 — Deploy Dev → Test
+#
+# Trigger : Push to main (PR merged)
+# Gate    : environment: test (Tech Lead approval)
+# What    : Promotes Dev Workspace → Test Workspace
+#           via Fabric Deployment Pipeline REST API
+#
+# This workflow completes and closes once Test is deployed.
+# Team then conducts UAT freely with no open/hanging workflow.
+# When ready for Prod, trigger deploy-prod.yml separately.
+# ============================================================
+
+name: Deploy — Dev to Test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'fabric/**'     # Only trigger when Fabric items change
+
+  workflow_dispatch:    # Allow manual trigger if needed
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: false
+        default: 'Manual re-deploy to Test'
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+
+  # ──────────────────────────────────────────
+  # JOB: Deploy Dev → Test
+  # Gate: Tech Lead must approve in GitHub
+  #       Settings → Environments → test
+  # ──────────────────────────────────────────
+  deploy-to-test:
+    name: Deploy Dev to Test
+    runs-on: ubuntu-latest
+    environment: test             # ← GitHub pauses here for Tech Lead approval
+    env:
+      AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      FABRIC_PIPELINE_ID:  ${{ vars.FABRIC_PIPELINE_ID }}
+      DEV_STAGE_ID:        ${{ vars.DEV_STAGE_ID }}
+      TEST_STAGE_ID:       ${{ vars.TEST_STAGE_ID }}
+      PROD_STAGE_ID:       ${{ vars.PROD_STAGE_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install azure-identity requests
+
+      - name: Deploy Dev to Test
+        run: |
+          python .deploy/deploy-option3.py \
+            --aztenantid    "$AZURE_TENANT_ID" \
+            --azclientid    "$AZURE_CLIENT_ID" \
+            --azspsecret    "$AZURE_CLIENT_SECRET" \
+            --pipeline_id   "$FABRIC_PIPELINE_ID" \
+            --dev_stage_id  "$DEV_STAGE_ID" \
+            --test_stage_id "$TEST_STAGE_ID" \
+            --prod_stage_id "$PROD_STAGE_ID" \
+            --target        "test"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo '## Deploy Dev → Test' >> $GITHUB_STEP_SUMMARY
+          echo '| Field | Value |' >> $GITHUB_STEP_SUMMARY
+          echo '|---|---|' >> $GITHUB_STEP_SUMMARY
+          echo "| Status       | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit       | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch       | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Reason       | ${{ github.event.inputs.reason || 'PR merged to main' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Test Workspace is ready for UAT." >> $GITHUB_STEP_SUMMARY
+          echo "▶ When sign-off received, trigger deploy-prod.yml manually." >> $GITHUB_STEP_SUMMARY
+
+# ──────────────────────────────────────────
+# GitHub Secrets (repository level):
+#   AZURE_TENANT_ID         — Azure AD tenant ID
+#   AZURE_CLIENT_ID         — Service principal client ID
+#   AZURE_CLIENT_SECRET     — Service principal client secret
+#
+# GitHub Variables (repository level):
+#   FABRIC_PIPELINE_ID      — Fabric Deployment Pipeline ID
+#   DEV_STAGE_ID            — Stage ID for Dev
+#   TEST_STAGE_ID           — Stage ID for Test
+#   PROD_STAGE_ID           — Stage ID for Prod
+#
+# GitHub Environment (Settings → Environments → test):
+#   Required reviewers: Tech Lead
+# ──────────────────────────────────────────
